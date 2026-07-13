@@ -8,6 +8,7 @@ function createMainWindow() {
     width: 1440,
     height: 900,
     backgroundColor: '#0b0e14',
+    icon: path.join(__dirname, '../assets/icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
