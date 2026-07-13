@@ -14,7 +14,8 @@ import {
 interface SyncMessage {
   type: string;
   index?: number;
-  cursor?: Point;
+  cursor?: Point | null;
+  isClicking?: boolean;
   paths?: DrawingPath[];
   spotlight?: boolean;
   spotlightPos?: Point;
@@ -24,6 +25,11 @@ interface SyncMessage {
   action?: string;
   tool?: string;
   laserDecayTime?: number;
+  panOffset?: Point;
+  points?: Point[];
+  color?: string;
+  x?: number;
+  y?: number;
 }
 
 export default function AudienceView() {
@@ -44,10 +50,21 @@ export default function AudienceView() {
 
   // New states for real-time laser sync and sizing
   const [activeTool, setActiveTool] = useState<string>('arrow');
-  const [laserDecayTime, setLaserDecayTime] = useState<number>(1000);
+  const [laserDecayTime, setLaserDecayTime] = useState<number>(1500);
   const [laserDots, setLaserDots] = useState<{ id: string; x: number; y: number; createdAt: number }[]>([]);
   const [containerSize, setContainerSize] = useState({ width: 1280, height: 720 });
   const containerObserverRef = useRef<ResizeObserver | null>(null);
+
+  // States for real-time panning and tracing sync
+  const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
+  const [activePathPoints, setActivePathPoints] = useState<Point[]>([]);
+  const [activePathTool, setActivePathTool] = useState<string>('pen');
+  const [activePathColor, setActivePathColor] = useState<string>('#ff0000');
+
+  const audienceSyncStateRef = useRef({ activeTool, laserDecayTime });
+  useEffect(() => {
+    audienceSyncStateRef.current = { activeTool, laserDecayTime };
+  }, [activeTool, laserDecayTime]);
 
   const containerRef = React.useCallback((node: HTMLDivElement | null) => {
     if (containerObserverRef.current) {
@@ -99,17 +116,17 @@ export default function AudienceView() {
           );
         }
       } else if (data.type === 'SYNC_CURSOR') {
-        if (data.cursor) {
-          setPresenterCursor(data.cursor);
-          if (activeTool === 'laser' && laserDecayTime > 0) {
-            const newDot = {
-              id: Math.random().toString(),
-              x: data.cursor.x,
-              y: data.cursor.y,
-              createdAt: Date.now(),
-            };
-            setLaserDots((prev) => [...prev, newDot]);
-          }
+        setPresenterCursor(data.cursor || null);
+        const currentActiveTool = audienceSyncStateRef.current.activeTool;
+        const currentLaserDecayTime = audienceSyncStateRef.current.laserDecayTime;
+        if (data.cursor && currentActiveTool === 'laser' && currentLaserDecayTime > 0 && data.isClicking) {
+          const newDot = {
+            id: Math.random().toString(),
+            x: data.cursor.x,
+            y: data.cursor.y,
+            createdAt: Date.now(),
+          };
+          setLaserDots((prev) => [...prev, newDot]);
         }
       } else if (data.type === 'SYNC_LASER_DECAY') {
         if (data.laserDecayTime !== undefined) {
@@ -128,6 +145,29 @@ export default function AudienceView() {
         if (data.spotlightPos) setSpotlightPos(data.spotlightPos);
       } else if (data.type === 'SYNC_ZOOM') {
         if (data.zoom !== undefined) setZoomLevel(data.zoom);
+      } else if (data.type === 'SYNC_PAN_OFFSET') {
+        if (data.panOffset) {
+          setPanOffset(data.panOffset);
+        }
+      } else if (data.type === 'SYNC_ACTIVE_PATH') {
+        if (data.points) {
+          setActivePathPoints(data.points);
+          if (data.tool) setActivePathTool(data.tool);
+          if (data.color) setActivePathColor(data.color);
+        }
+      } else if (data.type === 'SYNC_IFRAME_CLICK') {
+        const x = data.x;
+        const y = data.y;
+        if (x !== undefined && y !== undefined && iframeRef.current) {
+          const audienceDoc = iframeRef.current.contentDocument;
+          if (audienceDoc) {
+            const element = audienceDoc.elementFromPoint(x, y) as HTMLElement;
+            if (element) {
+              element.click();
+              element.focus();
+            }
+          }
+        }
       } else if (data.type === 'SYNC_HTML') {
         const activeHtml = localStorage.getItem('htmlslides_active_html');
         if (activeHtml) setHtmlContent(activeHtml);
@@ -142,6 +182,9 @@ export default function AudienceView() {
         }
       }
     };
+
+    // Request initial sync immediately upon mount
+    channel.postMessage({ type: 'REQUEST_INITIAL_SYNC' });
 
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -251,7 +294,10 @@ export default function AudienceView() {
         <div className="flex items-center gap-2 pr-2 border-r border-white/10">
           {/* Close/Minimize (Red) */}
           <button
-            onClick={() => sendSimulatorAction('close')}
+            onClick={() => {
+              sendSimulatorAction('close');
+              window.close();
+            }}
             className="w-3.5 h-3.5 rounded-full bg-red-500 hover:bg-red-400 transition-colors flex items-center justify-center text-[8px] font-bold text-black/60"
             title="Minimize / Close Window"
           >
@@ -267,7 +313,10 @@ export default function AudienceView() {
           </button>
           {/* Maximize / Fill (Green) */}
           <button
-            onClick={() => sendSimulatorAction(simSize === 'maximized' ? 'normal' : 'maximized')}
+            onClick={() => {
+              sendSimulatorAction(simSize === 'maximized' ? 'normal' : 'maximized');
+              toggleFullscreen();
+            }}
             className="w-3.5 h-3.5 rounded-full bg-green-500 hover:bg-green-400 transition-colors flex items-center justify-center text-[6px] font-bold text-black/60"
             title="Maximize Window"
           >
@@ -333,7 +382,7 @@ export default function AudienceView() {
       <div
         className="w-[1280px] h-[720px] shrink-0 relative transition-transform duration-100 ease-out"
         style={{
-          transform: `scale(${layoutScale * zoomLevel * localZoom})`,
+          transform: `scale(${layoutScale * zoomLevel * localZoom}) translate(${panOffset.x}px, ${panOffset.y}px)`,
           transformOrigin: 'center center',
         }}
       >
@@ -384,6 +433,26 @@ export default function AudienceView() {
 
           {/* Sync drawings paths */}
           {paths.map(renderPathToSvg)}
+
+          {/* Active drawing path sync */}
+          {activePathPoints.length > 0 && (() => {
+            const d = activePathPoints
+              .map((p, index) => `${index === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
+              .join(' ');
+            const width = activePathTool === 'highlighter' ? 24 : 3;
+            const opacity = activePathTool === 'highlighter' ? 0.35 : 1;
+            return (
+              <path
+                d={d}
+                fill="none"
+                stroke={activePathColor}
+                strokeWidth={width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={opacity}
+              />
+            );
+          })()}
 
           {/* Laser continuous lines for a smooth glowing trail on Audience display */}
           {(() => {
@@ -470,27 +539,71 @@ export default function AudienceView() {
             return pathsToRender;
           })()}
 
-          {/* Glowing cursor duplicating presenter's mouse pointer */}
-          {presenterCursor && (
-            <g>
-              <circle
-                cx={presenterCursor.x}
-                cy={presenterCursor.y}
-                r="12"
-                fill="rgba(194, 255, 61, 0.2)"
-                className="animate-ping"
-              />
-              <circle
-                cx={presenterCursor.x}
-                cy={presenterCursor.y}
-                r="5"
-                fill="#c2ff3d"
-                stroke="#000"
-                strokeWidth="1.5"
-                style={{ filter: 'drop-shadow(0 0 3px rgba(194,255,61,0.8))' }}
-              />
-            </g>
-          )}
+          {/* Custom styled presenter cursor based on tool */}
+          {presenterCursor && (() => {
+            if (activeTool === 'laser') {
+              return (
+                <g>
+                  <circle
+                    cx={presenterCursor.x}
+                    cy={presenterCursor.y}
+                    r="16"
+                    fill="rgba(255, 0, 0, 0.25)"
+                    className="animate-ping"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <circle
+                    cx={presenterCursor.x}
+                    cy={presenterCursor.y}
+                    r="6"
+                    fill="#ff3333"
+                    stroke="#ffffff"
+                    strokeWidth="1.5"
+                    style={{
+                      pointerEvents: 'none',
+                      filter: 'drop-shadow(0 0 8px rgba(255,0,0,1))',
+                    }}
+                  />
+                </g>
+              );
+            }
+
+            if (activeTool === 'arrow' || !activeTool) {
+              return (
+                <g transform={`translate(${presenterCursor.x}, ${presenterCursor.y})`}>
+                  <path
+                    d="M 0 0 L 12 12 L 5 12 L 7.5 18 L 5.5 19 L 3 13 L 0 16 Z"
+                    fill="#ffffff"
+                    stroke="#000000"
+                    strokeWidth="1.5"
+                    style={{
+                      pointerEvents: 'none',
+                      filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.4))',
+                    }}
+                  />
+                </g>
+              );
+            }
+
+            if (activeTool === 'spotlight') {
+              return null; // The spotlight mask already highlights the position
+            }
+
+            // Other drawing tools (pen, highlighter, eraser)
+            return (
+              <g>
+                <circle
+                  cx={presenterCursor.x}
+                  cy={presenterCursor.y}
+                  r={activeTool === 'highlighter' ? 12 : 3}
+                  fill={activeTool === 'highlighter' ? 'rgba(255,255,0,0.3)' : '#ffffff'}
+                  stroke="#000000"
+                  strokeWidth="1"
+                  style={{ pointerEvents: 'none' }}
+                />
+              </g>
+            );
+          })()}
         </svg>
       </div>
 

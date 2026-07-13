@@ -46,8 +46,8 @@ import PresenterNotes from './components/PresenterNotes';
 import DrawingOverlay from './components/DrawingOverlay';
 import AudienceView from './components/AudienceView';
 
-const DECAY_SPEEDS = [0, 250, 500, 900, 1400, 2000, 2800, 3800, 5000];
-const DECAY_PERCENTAGES = ['100%', '90%', '80%', '70%', '60%', '40%', '30%', '20%', '10%'];
+const DECAY_SPEEDS = [150, 300, 600, 1000, 1500, 2200, 3000, 4000, 5000];
+const DECAY_PERCENTAGES = ['95%', '90%', '80%', '70%', '60%', '40%', '30%', '20%', '10%'];
 
 export default function App() {
   // Check if we are in the clean Audience View window routing
@@ -95,7 +95,7 @@ export default function App() {
   const [zoomLevel, setZoomLevel] = useState<number>(1); // Zoom factor (1 = normal)
 
   // Custom states added for requirements
-  const [laserDecayTime, setLaserDecayTime] = useState<number>(1400); // Requirement 2: Laser trail decay in ms
+  const [laserDecayTime, setLaserDecayTime] = useState<number>(1500); // Requirement 2: Laser trail decay in ms
   const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 }); // Requirement 4: Zoom panning offset
   const [simSize, setSimSize] = useState<'normal' | 'bigger' | 'maximized'>('normal'); // Requirement 5: Simulator size
 
@@ -149,6 +149,28 @@ export default function App() {
   // References
   const presenterIframeRef = useRef<HTMLIFrameElement>(null);
   const syncChannel = useRef<BroadcastChannel | null>(null);
+
+  const syncStateRef = useRef({
+    currentSlideIndex: 0,
+    drawingPaths: [] as DrawingPath[],
+    activeTool: 'arrow' as string | null,
+    zoomLevel: 1,
+    panOffset: { x: 0, y: 0 } as Point,
+    laserDecayTime: 1200,
+    simSize: 'normal' as 'normal' | 'bigger' | 'maximized'
+  });
+
+  useEffect(() => {
+    syncStateRef.current = {
+      currentSlideIndex,
+      drawingPaths,
+      activeTool,
+      zoomLevel,
+      panOffset,
+      laserDecayTime,
+      simSize
+    };
+  }, [currentSlideIndex, drawingPaths, activeTool, zoomLevel, panOffset, laserDecayTime, simSize]);
 
   // Toast Notification Trigger
   const triggerToast = (msg: string) => {
@@ -221,6 +243,16 @@ export default function App() {
           setRoleFlipped(data.roleFlipped);
           window.location.reload();
         }
+      } else if (data.type === 'REQUEST_INITIAL_SYNC') {
+        // Send complete active state to ensure seamless connection
+        const state = syncStateRef.current;
+        channel.postMessage({ type: 'SYNC_SLIDE', index: state.currentSlideIndex });
+        channel.postMessage({ type: 'SYNC_PATHS', paths: state.drawingPaths });
+        channel.postMessage({ type: 'SYNC_TOOL', tool: state.activeTool });
+        channel.postMessage({ type: 'SYNC_ZOOM', zoom: state.zoomLevel });
+        channel.postMessage({ type: 'SYNC_PAN_OFFSET', panOffset: state.panOffset });
+        channel.postMessage({ type: 'SYNC_LASER_DECAY', laserDecayTime: state.laserDecayTime });
+        channel.postMessage({ type: 'SIMULATOR_ACTION_BROADCAST', action: state.simSize });
       }
     };
     syncChannel.current = channel;
@@ -245,10 +277,11 @@ export default function App() {
   }, []);
 
   // Sync state whenever presenter cursor moves
-  const handleCursorMove = (point: Point) => {
+  const handleCursorMove = (point: Point, isClicking = false) => {
     syncChannel.current?.postMessage({
       type: 'SYNC_CURSOR',
-      cursor: point
+      cursor: point,
+      isClicking: isClicking
     });
     if (activeTool === 'spotlight') {
       syncChannel.current?.postMessage({
@@ -287,6 +320,14 @@ export default function App() {
       zoom: zoomLevel
     });
   }, [zoomLevel]);
+
+  // Sync Panning Offset
+  useEffect(() => {
+    syncChannel.current?.postMessage({
+      type: 'SYNC_PAN_OFFSET',
+      panOffset: panOffset
+    });
+  }, [panOffset]);
 
   // Sync Laser decay settings
   useEffect(() => {
@@ -954,12 +995,40 @@ export default function App() {
                     <iframe
                       ref={presenterIframeRef}
                       srcDoc={activePres.htmlContent}
-                      onLoad={() => {
+                      onLoad={(e) => {
+                        const iframe = e.currentTarget;
                         // Send message to sync active slide immediately on loading
-                        presenterIframeRef.current?.contentWindow?.postMessage(
+                        iframe.contentWindow?.postMessage(
                           { type: 'GOTO_SLIDE', index: currentSlideIndex },
                           '*'
                         );
+
+                        // Attach event listeners inside the iframe document
+                        const iframeDoc = iframe.contentDocument;
+                        if (iframeDoc) {
+                          iframeDoc.addEventListener('mousemove', (me: MouseEvent) => {
+                            const x = me.clientX;
+                            const y = me.clientY;
+                            handleCursorMove({ x, y });
+                          });
+
+                          iframeDoc.addEventListener('mouseleave', () => {
+                            syncChannel.current?.postMessage({
+                              type: 'SYNC_CURSOR',
+                              cursor: null
+                            });
+                          });
+
+                          iframeDoc.addEventListener('click', (ce: MouseEvent) => {
+                            const x = ce.clientX;
+                            const y = ce.clientY;
+                            syncChannel.current?.postMessage({
+                              type: 'SYNC_IFRAME_CLICK',
+                              x,
+                              y
+                            });
+                          });
+                        }
                       }}
                       className="w-full h-full border border-white/5 rounded-2xl bg-black shadow-2xl relative"
                       title="HTML Presenter Frame"
@@ -973,6 +1042,14 @@ export default function App() {
                       paths={drawingPaths}
                       onPathsChange={handlePathsChange}
                       onCursorMove={handleCursorMove}
+                      onActivePathChange={(points) => {
+                        syncChannel.current?.postMessage({
+                          type: 'SYNC_ACTIVE_PATH',
+                          points,
+                          tool: activeTool,
+                          color: drawingColor
+                        });
+                      }}
                       laserDecayTime={laserDecayTime}
                       panOffset={panOffset}
                       onPanOffsetChange={setPanOffset}
@@ -1154,7 +1231,7 @@ export default function App() {
                     setActiveTool((prev) => (prev === 'laser' ? 'arrow' : 'laser'));
                     triggerToast('Laser pointer selected!');
                   }}
-                  title="Laser Pointer (Hover to adjust trail length)"
+                  title="Laser Pointer (Hover to adjust speed)"
                   className={`p-2 rounded-lg border transition-all flex items-center gap-1 ${
                     activeTool === 'laser'
                       ? 'bg-red-500/10 border-red-500/20 text-red-400 scale-105'
@@ -1167,9 +1244,9 @@ export default function App() {
                 {/* Laser decay hover slider settings */}
                 <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-[#131720]/95 backdrop-blur border border-white/10 rounded-xl p-3 shadow-2xl flex flex-col gap-2 z-50 pointer-events-auto opacity-0 invisible group-hover/laser:opacity-100 group-hover/laser:visible transition-all duration-200 min-w-[180px]">
                   <div className="flex items-center justify-between text-[9px] font-extrabold text-gray-400 uppercase tracking-wide">
-                    <span>Trail</span>
+                    <span>Speed</span>
                     <span className="text-red-400 font-mono">
-                      {laserDecayTime === 0 ? 'Off' : DECAY_PERCENTAGES[DECAY_SPEEDS.indexOf(laserDecayTime)] || '50%'}
+                      {DECAY_PERCENTAGES[DECAY_SPEEDS.indexOf(laserDecayTime)] || '60%'}
                     </span>
                   </div>
                   <input

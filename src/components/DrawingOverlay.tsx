@@ -7,7 +7,8 @@ interface DrawingOverlayProps {
   zoomLevel: number;
   paths: DrawingPath[];
   onPathsChange: (paths: DrawingPath[]) => void;
-  onCursorMove?: (point: Point) => void;
+  onCursorMove?: (point: Point, isClicking?: boolean) => void;
+  onActivePathChange?: (points: Point[]) => void;
   laserDecayTime?: number; // Requirement 2: Adjustable laser trail
   panOffset?: Point; // Requirement 4: Drag panning offset
   onPanOffsetChange?: (offset: Point) => void; // Requirement 4
@@ -28,6 +29,7 @@ export default function DrawingOverlay({
   paths,
   onPathsChange,
   onCursorMove,
+  onActivePathChange,
   laserDecayTime = 1200,
   panOffset = { x: 0, y: 0 },
   onPanOffsetChange,
@@ -89,8 +91,12 @@ export default function DrawingOverlay({
         createdAt: Date.now(),
       };
       setLaserDots((prev) => [...prev, newDot]);
+      if (onCursorMove) {
+        onCursorMove(coord, true);
+      }
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
       setCurrentPoints([coord]);
+      onActivePathChange?.([coord]);
     } else if (activeTool === 'eraser') {
       eraseAtPoint(coord);
     }
@@ -118,10 +124,10 @@ export default function DrawingOverlay({
     setMousePos(coord);
 
     if (onCursorMove) {
-      onCursorMove(coord);
+      onCursorMove(coord, isDrawing);
     }
 
-    if (activeTool === 'laser' && laserDecayTime > 0) {
+    if (activeTool === 'laser' && laserDecayTime > 0 && isDrawing) {
       const newDot: LaserDot = {
         id: Math.random().toString(),
         x: coord.x,
@@ -134,7 +140,11 @@ export default function DrawingOverlay({
     if (!isDrawing) return;
 
     if (activeTool === 'pen' || activeTool === 'highlighter') {
-      setCurrentPoints((prev) => [...prev, coord]);
+      setCurrentPoints((prev) => {
+        const updated = [...prev, coord];
+        onActivePathChange?.(updated);
+        return updated;
+      });
     } else if (activeTool === 'eraser') {
       eraseAtPoint(coord);
     }
@@ -148,6 +158,13 @@ export default function DrawingOverlay({
         onZoomCycle?.();
       }
       return;
+    }
+
+    if (activeTool === 'laser') {
+      const coord = getCoordinates(e);
+      if (onCursorMove) {
+        onCursorMove(coord, false);
+      }
     }
 
     if (!isDrawing) return;
@@ -167,6 +184,7 @@ export default function DrawingOverlay({
     }
 
     setCurrentPoints([]);
+    onActivePathChange?.([]);
   };
 
   const handleMouseLeave = (e: React.MouseEvent<SVGSVGElement>) => {
