@@ -1,0 +1,6 @@
+{
+  "name": "HTMLSlides Reader",
+  "description": "An interactive HTML slides presenter and reader featuring drawing canvas, dual-display audience sync, laser pointer, spotlight, and speaker notes editing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
